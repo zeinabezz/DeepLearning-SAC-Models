@@ -1,0 +1,387 @@
+#multichannel cnn-pool-lstm+siamese+validation
+from numpy.random import seed
+seed(1)
+from tensorflow import set_random_seed
+set_random_seed(2)
+
+from pickle import load
+import keras
+from keras.callbacks import EarlyStopping
+
+from numpy import array
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from keras.utils.vis_utils import plot_model
+from keras.models import Model
+from keras.layers import Input
+from keras.layers import Dense
+from tensorflow.python.keras import backend as K
+from keras.layers import Layer
+from keras.layers import Flatten
+from keras.layers import Dropout
+from keras.layers import Embedding
+import numpy as np
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
+from scipy.stats import pearsonr
+from sklearn.metrics import mean_squared_error
+from keras.layers.convolutional import Conv1D
+from keras.layers.convolutional import MaxPooling1D
+from keras.layers.merge import concatenate
+import tensorflow as tf
+import numpy
+from sklearn.model_selection import KFold
+import pandas as pd
+from keras import optimizers
+from keras import backend as k
+import keras
+from keras.callbacks import LearningRateScheduler
+import matplotlib.pyplot as plt
+from keras import backend as K
+from keras.callbacks import ModelCheckpoint 
+from keras.layers import LSTM
+
+from numpy.random import seed
+seed(1)
+from tensorflow import set_random_seed
+set_random_seed(2)
+
+def callback_checkpoint():
+    filepath="weights.best.hdf5"
+    checkpoint = ModelCheckpoint(filepath, monitor='val_correlation_coefficient', verbose=1, save_best_only=True, mode='max')
+    return checkpoint
+
+def set_optimizer(epochs):
+        learning_rate=0.0001
+        decay_rate=learning_rate/epochs
+        adam=keras.optimizers.Adam(lr=learning_rate, decay=decay_rate)
+        return adam
+
+
+def lr_schedule(epoch):
+    lrate = 0.0001
+    if epoch > 20:
+        lrate = 0.0001
+    elif epoch > 50:
+        lrate = 0.0001     
+    return lrate
+
+def correlation_coefficient(y_true, y_pred):
+    return tf.contrib.metrics.streaming_pearson_correlation(y_pred, y_true)[1]
+
+
+# define the model
+def define_model(length, vocab_size):
+	# channel 1
+	inputs1 = Input(shape=(length,))
+	embedding1 = Embedding(vocab_size, 300)(inputs1)
+	conv1 = Conv1D(filters=300, kernel_size=2, activation='relu')(embedding1)
+	drop1 = Dropout(0.2)(conv1)
+	nor11=keras.layers.BatchNormalization()(drop1)
+
+	pool1 = MaxPooling1D(pool_size=length-2+1)(nor11)
+	nor12=keras.layers.BatchNormalization()(pool1)
+
+	#ls1=LSTM(400)(nor12)
+	#ldrop1 = Dropout(0.55)(ls1)
+	#nor13=keras.layers.BatchNormalization()(ldrop1)
+
+#	flat1 = Flatten()(ls1)
+
+	# channel 2
+	inputs2 = Input(shape=(length,))
+	embedding2 = Embedding(vocab_size, 300)(inputs2)
+	conv2 = Conv1D(filters=300, kernel_size=3, activation='relu')(embedding2)
+	drop2 = Dropout(0.2)(conv2)
+	nor21=keras.layers.BatchNormalization()(drop2)
+
+	pool2 = MaxPooling1D(pool_size=length-3+1)(nor21)
+#	flat2 = Flatten()(pool2)
+	nor22=keras.layers.BatchNormalization()(pool2)
+
+	#ls2=LSTM(400)(nor22)
+	#ldrop2 = Dropout(0.55)(ls2)
+	#nor23=keras.layers.BatchNormalization()(ldrop2)
+
+	# channel 3
+	inputs3 = Input(shape=(length,))
+	embedding3 = Embedding(vocab_size, 300)(inputs3)
+	conv3 = Conv1D(filters=300, kernel_size=4, activation='relu')(embedding3)
+	drop3 = Dropout(0.2)(conv3)
+	nor31=keras.layers.BatchNormalization()(drop3)
+
+	pool3 = MaxPooling1D(pool_size=length-4+1)(drop3)
+#	flat3 = Flatten()(pool3)
+	nor32=keras.layers.BatchNormalization()(pool3)
+
+	#ls3=LSTM(400)(pool3)
+	#ldrop3 = Dropout(0.55)(ls3)
+	#nor33=keras.layers.BatchNormalization()(ldrop3)
+
+	# merge
+	merged = concatenate([nor12, nor22, nor32])
+	ls=LSTM(400)(merged)
+	outputs = Dropout(0.2)(ls)
+
+	return inputs1, inputs2, inputs3, outputs
+
+    
+
+# load a clean dataset
+def load_dataset(filename):
+    return load(open(filename, 'rb'))
+
+
+#preprocessing text
+def preprocess(lines):
+	#print(lines)      
+	ps = PorterStemmer() 
+	for i in range(len(lines)):
+		tokens = str(lines[i]).split() 
+        # filter out stop words then stem the remaining words
+		stop_words = set(stopwords.words('english'))    
+		tokens = [ps.stem(w) for w in tokens if not w in stop_words]    
+		lines[i]=' '.join(tokens)  
+	#print('lines: ')
+	#print(lines)
+	return lines
+
+    
+
+# encode a list of lines
+def encode_text(tokenizer, lines, length):  
+	# integer encode
+	encoded = tokenizer.texts_to_sequences(lines)
+	# pad encoded sequences
+	padded = pad_sequences(encoded, maxlen=length, padding='post')
+	return padded
+
+#calculate mse and correlation for predicted values
+def cal(pred, actual):
+	pred=pd.DataFrame(pred,  columns=['predict'])
+	yy=pred.predict
+	l=np.array(actual, dtype=pd.Series)
+	l=l.tolist()
+	corr, _ = pearsonr(yy, l)
+	mean=mean_squared_error(yy, l)
+	return corr, mean
+ 
+def csvfile(pred, actual, file_name):
+	print('pred before dataframe: ')
+	print(pred)
+	pred=pd.DataFrame(pred,  columns=['predict'])
+	print('pred after dataframe: ')
+	print(pred.predict)
+	all=pd.concat([pred.predict, actual], axis=1, keys=['predict', 'actual'])
+	all.to_csv(file_name)
+
+    #plot mean of loss or correlation for training or validation
+def plot_history(lh, desc, min_val_loss):
+    plt.plot(lh, label=desc)
+    plt.title(desc)    
+    plt.xlabel('epochs')    
+    plt.ylabel(desc)    
+    plt.legend()
+    plt.show()
+    if(desc.find('loss')!=-1):
+        min_loss=(np.where(lh == min(lh))[0][0])
+        print('epoch with minium val_loss is: ', min_loss+1)
+        print('loss minimum value is: ', min(lh))
+        print('avg loss is: ', lh)
+        return min_loss
+    if(desc.find('correlation')!=-1):
+        print('training correlation value is: ', lh[min_val_loss])        
+    print(desc)
+    print(lh)
+    
+    #plot mean of loss or correlation for training or validation
+def plot_histories(histories, desc, min_val_loss):
+    min_hist=len(histories[0])
+    for i in range(len(histories)):
+        print('histories length is: ', len(histories))
+        if (len(histories[i])<min_hist):
+            print('history number: ', i, ' has: ', len(histories[i]), ' epochs')
+            min_hist=len(histories[i])         
+    print('min number of epochs: ', min_hist)
+    lh=np.zeros(min_hist)
+    for i in range (min_hist):
+        for j in range(len(histories)):
+            lh[i]=lh[i]+histories[j][i]
+    lh=lh/len(histories)
+    plt.plot(lh, label=desc)
+    plt.title(desc)    
+    plt.xlabel('epochs')    
+    plt.ylabel(desc)    
+    plt.legend()
+    plt.show()
+    if(desc.find('loss')!=-1):
+        min_loss=(np.where(lh == min(lh))[0][0])
+        print('epoch with minium val_loss is: ', min_loss+1)
+        print('loss minimum value is: ', min(lh))
+        print('avg loss is: ', lh)
+        return min_loss
+    if(desc.find('correlation')!=-1):
+        print('training correlation value is: ', lh[min_val_loss])        
+    print(desc)
+    print(lh)
+
+# fit a tokenizer
+def create_tokenizer(lines):
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(lines)
+    return tokenizer
+
+# calculate the maximum document length
+def max_length(lines):
+    return max([len(s.split()) for s in lines])
+
+# encode a list of lines
+def encode_text(tokenizer, lines, length):
+	# integer encode
+    encoded = tokenizer.texts_to_sequences(lines)
+	# pad encoded sequences
+    padded = pad_sequences(encoded, maxlen=length, padding='post')
+    return padded
+
+
+# define training data
+f = pd.read_csv('../input/sasiamese/siameseTrainingData3.csv', encoding='ISO-8859-1')
+ftest = pd.read_csv('../input/sasiamese/siameseTestingData.csv', encoding='ISO-8859-1')
+fvalid = pd.read_csv('../input/sasiamese/siameseValidationData3.csv', encoding='ISO-8859-1')
+
+data_train = pd.DataFrame(data=f) 
+trainLines=(data_train.manswer).str.lower()
+trainLines=preprocess(trainLines)
+strainLines=(data_train.sanswer).str.lower()
+strainLines=preprocess(strainLines)
+trainLabels=data_train.score
+
+data_test = pd.DataFrame(data=ftest) 
+testLines=(data_test.manswer).str.lower()
+testLines=preprocess(testLines)
+stestLines=(data_test.sanswer).str.lower()
+stestLines=preprocess(stestLines)
+testLabels=data_test.score
+
+data_valid = pd.DataFrame(data=fvalid) 
+validLines =(data_valid.manswer).str.lower()
+validLines=preprocess(validLines)
+svalidLines=(data_valid.sanswer).str.lower()
+svalidLines=preprocess(svalidLines)
+validLabels=data_valid.score
+
+# create tokenizer
+
+all=[trainLines, validLines, strainLines, svalidLines, testLines, stestLines]
+#all=[trainLines, strainLines]
+labels=[trainLabels, validLabels]
+trainLabels=pd.concat(labels)
+#print('all: ')
+#print(all)
+allLines = pd.concat(all)
+# calculate max document length
+length = max_length(allLines)
+# create tokenizer
+alltokenizer = create_tokenizer(allLines)
+# calculate vocabulary size
+mvocab_size = len(alltokenizer.word_index) + 1
+
+print('Max model answer length: %d' % length)
+print('Vocabulary size: %d' % mvocab_size)
+
+print('Max student answer length: %d' % length)
+print('student Vocabulary size: %d' % mvocab_size)
+# encode data
+allX = encode_text(alltokenizer, allLines, length)
+ 
+s=(trainLines.size)
+print(s)
+s1=(validLines.size)
+trainX=allX[0:s+s1]
+strainX=allX[s+s1:2*(s+s1)]
+vsize=2*s+s1
+svsize=vsize+s1
+
+s2=(testLines.size)
+testX=allX[2*(s+s1):2*(s+s1)+s2]
+stestX=allX[2*(s+s1)+s2:]
+
+print(trainX.shape, testX.shape)
+print(strainX.shape, stestX.shape)
+
+
+traincvlossscores=[]
+traincvscores=[]
+cvlossscores=[]
+cvscores=[]
+mtraincor=[]
+traincor=[]
+mvcor=[]
+vcor=[]
+histories=[]
+val_histories=[]
+cor_histories=[]
+val_cor_histories=[]
+epochs=150
+  
+	# define model
+inputs1, inputs2,  inputs3, outputs = define_model(length, mvocab_size)
+sinputs1, sinputs2,  sinputs3, soutputs = define_model(length, mvocab_size)
+foutputs=keras.layers.BatchNormalization()(outputs) 
+sfoutputs=keras.layers.BatchNormalization()(soutputs) 
+
+foutput = concatenate([foutputs, sfoutputs])
+output = Dense(1, activation='elu')(foutput)
+    #foutput = CosSim()([foutputs, sfoutputs])
+    #output=keras.layers.BatchNormalization()(soutput) 
+
+    #define optimizer
+opt=set_optimizer(epochs)
+model = Model(inputs=[inputs1, inputs2, inputs3, sinputs1, sinputs2, sinputs3], outputs=output)
+	# compile
+model.compile(loss='mse', optimizer=opt, metrics=[correlation_coefficient])
+K.get_session().run(tf.local_variables_initializer())
+
+	# summarize
+print(model.summary())
+plot_model(model, show_shapes=True, to_file='multichannel.png')
+	# fit model
+    #lr_scheduler=LearningRateScheduler(lr_schedule)
+    #callbacks_list = [lr_scheduler]
+    #checkpoint=callback_checkpoint()
+es = EarlyStopping(monitor='loss', mode='min', verbose=1, min_delta=1e-5,patience=80)
+mcp=keras.callbacks.ModelCheckpoint('bestweights4siamesecnnlstm1', monitor='loss', save_best_only=True, verbose=1)
+callbacks_list = [mcp, es]
+history=model.fit([trainX, trainX, trainX, strainX, strainX, strainX], array(trainLabels), 
+                      epochs=epochs, callbacks=callbacks_list, 
+                      batch_size=64, validation_data=([testX, testX, testX, stestX, stestX, stestX],testLabels))
+    
+histories.append(history.history['loss'])
+
+cor_histories.append(history.history['correlation_coefficient'])
+
+	# save the model
+model.save('model.h5')
+	# evaluate model on training dataset
+loss, cor= model.evaluate([trainX, trainX, trainX, strainX, strainX, strainX], array(trainLabels), verbose=0)
+print('train Correlation: %f' % (cor*100))
+print('train loss: %f' % (loss*100))
+traincvscores.append(cor*100)
+traincvlossscores.append(loss*100) 
+
+
+min_loss=plot_history(history.history['loss'], 'loss', 0)
+plot_history(history.history['correlation_coefficient'], 'correlation', min_loss)
+
+    
+print('***********************************')
+print('train cor: %f' % numpy.mean(traincvscores))
+print('train loss: %f' % numpy.mean(traincvlossscores))
+
+print('************************************')
+
+print('****************************************************')
+# evaluate model on test dataset dataset
+loss, cor = model.evaluate([testX, testX, testX, stestX, stestX, stestX],array(testLabels), verbose=0)
+print('Test Correlation: %f' % (cor*100))
+print('Test loss: %f' % (loss*100))
